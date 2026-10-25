@@ -559,6 +559,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     load_dotenv(REPO_ROOT / ".env")
+    creds = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
+    if creds and not Path(creds).is_absolute():
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str((REPO_ROOT / creds).resolve())
     setup_logging()
     settings = load_settings()
     paths = default_paths().ensure()

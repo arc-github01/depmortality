@@ -3,6 +3,7 @@
 .env
 *.key.json
 *-credentials.json
+/secrets/
 
 # local-only working files (contain GitHub logins)
 reports/gate1_handcheck.csv
