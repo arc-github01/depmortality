@@ -1,0 +1,11 @@
+# Queries the owner has approved to exceed bigquery.max_gb_per_query, or to push the
+# phase total past bigquery.phase_budget_gb. Each entry pins the exact query text by hash.
+# Get hashes and estimates from reports/bq_dryrun_phase0.md (`pipeline dryrun`).
+#
+# - query_sha256: <hex>
+#   max_gb: <approved ceiling for this query>
+#   approved_on: YYYY-MM-DD
+#   note: why
+approvals: []
+# Raises bigquery.phase_budget_gb for this phase when the owner approves it.
+phase_budget_override_gb: null

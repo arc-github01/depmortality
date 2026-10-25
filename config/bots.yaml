@@ -1,0 +1,63 @@
+# Logins (case-insensitive) treated as bots in addition to any login ending in "[bot]".
+# Add entries with a comment saying where you saw them.
+logins:
+  - dependabot
+  - dependabot-preview
+  - renovate
+  - renovate-bot
+  - pre-commit-ci
+  - github-actions
+  - pyup-bot
+  - pyup.io bot
+  - greenkeeper
+  - greenkeeperio-bot
+  - snyk-bot
+  - codecov-io
+  - codecov-commenter
+  - coveralls
+  - allcontributors
+  - imgbot
+  - mergify
+  - sourcery-ai
+  - deepsource-autofix
+  - web-flow           # GitHub's committer identity for web-UI commits; never an author
+  - weblate
+  - transifex-integration
+  - readthedocs
+  - azure-pipelines
+  - sonarcloud
+  - lgtm-com
+  - deepsource-io
+  - restyled-io
+  - autofix-ci
+  - copilot-swe-agent
+
+# Commit-author names treated as bots (case-insensitive exact match).
+names:
+  - dependabot
+  - dependabot-preview
+  - renovate
+  - pre-commit-ci
+  - github-actions
+  - pyup.io bot
+  - pyup-bot
+  - greenkeeper
+  - snyk bot
+  - allcontributors
+  - imgbot
+  - weblate (bot)
+
+# Email address fragments that identify bots (case-insensitive substring match).
+email_fragments:
+  - "[bot]@users.noreply.github.com"
+  - "noreply@weblate.org"
+  - "bot@renovateapp.com"
+  - "support@dependabot.com"
+  - "github-bot@pyup.io"
+  - "bot@pre-commit.ci"
+
+# Conservative heuristic: a login or name is a bot if a separator-delimited token is
+# exactly one of these (so "bot-ci" matches but "abbott" and "botanist" do not).
+heuristic_tokens:
+  - bot
+  - autobot

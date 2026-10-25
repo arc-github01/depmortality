@@ -1,0 +1,26 @@
+# data and secrets
+data/
+.env
+*.key.json
+*-credentials.json
+
+# local-only working files (contain GitHub logins)
+reports/gate1_handcheck.csv
+reports/handcheck/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+.ipynb_checkpoints/

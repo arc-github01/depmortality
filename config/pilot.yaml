@@ -1,0 +1,18 @@
+# Phase 0 pilot selection (DECISIONS.md 2026-10-26).
+snapshot_date: 2026-10-26     # cache key date for every raw pull in this snapshot
+seed: 20261026
+
+n_top: 1000                   # census of the most depended-upon qualifying packages
+n_tail: 1000                  # stratified random sample from the rest
+
+cohort_first_release_start: 2012-01-01
+cohort_first_release_end: 2022-12-31
+
+# Tail strata: log10(direct dependents) bins x first-release year.
+# Bin edges are on direct-dependent counts; the last bin is open-ended.
+tail_dependent_bin_edges: [1, 2, 5, 20, 100]
+tail_allocation: proportional  # proportional to stratum size, at least 1 per non-empty stratum
+
+handcheck:
+  n_packages: 100
+  seed: 1100

@@ -1,0 +1,64 @@
+[project]
+name = "depmortality"
+version = "0.0.1"
+description = "Predicts when a project's dependencies will stop being maintained."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "google-cloud-bigquery>=3.25",
+    "httpx>=0.27",
+    "lifelines>=0.29",
+    "matplotlib>=3.9",
+    "numpy>=1.26",
+    "packaging>=24.1",
+    "polars>=1.9",
+    "pyarrow>=17",
+    "pydantic>=2.9",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0.2",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.112",
+    "mypy>=1.11",
+    "pre-commit>=3.8",
+    "pytest>=8.3",
+    "ruff>=0.6.9",
+    "types-pyyaml>=6.0.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/depmortality"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "N", "S", "PTH"]
+ignore = ["S101", "S603", "S607", "N818"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "N802", "E501", "E741"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["lifelines.*", "google.cloud.*", "matplotlib.*", "pyarrow.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = ["network: needs network or credentials (skipped in CI)"]

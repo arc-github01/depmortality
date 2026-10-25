@@ -1,0 +1,19 @@
+# CPython feature (X.Y.0) release dates.
+# Source: https://www.python.org/downloads/ ("Looking for a specific release?" table),
+# retrieved 2026-10-26. See DECISIONS.md.
+source: https://www.python.org/downloads/
+retrieved: 2026-10-26
+releases:
+  "3.3": 2012-09-29
+  "3.4": 2014-03-17
+  "3.5": 2015-09-13
+  "3.6": 2016-12-23
+  "3.7": 2018-06-27
+  "3.8": 2019-10-14
+  "3.9": 2020-10-05
+  "3.10": 2021-10-04
+  "3.11": 2022-10-24
+  "3.12": 2023-10-02
+  "3.13": 2024-10-07
+  "3.14": 2025-10-07
+  "3.15": 2026-10-09

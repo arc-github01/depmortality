@@ -1,0 +1,28 @@
+states:
+  quiet_window_months: 12          # W: months with no maintainer activity before Quiet
+  primary_maintainer_window_months: 24
+
+triggers:
+  advisory_window_days: 90
+  python_support_lag_months: 12
+  # Trigger (c) fires only on positive evidence of non-support (DECISIONS.md 2026-10-26).
+  python_support_requires_py3_evidence: true
+
+bigquery:
+  max_gb_per_query: 50             # rule 7: ask before any single query above this
+  phase_budget_gb: 50              # cumulative cap for the phase; raise only with approval
+  min_bytes_billed: 10485760       # BigQuery bills at least 10 MB per query
+  bytes_billed_headroom: 1.10      # maximum_bytes_billed = estimate * headroom
+
+http:
+  timeout_seconds: 30
+  max_retries: 6
+  backoff_base_seconds: 1.0
+  backoff_max_seconds: 120.0
+  github_min_remaining: 50         # sleep until reset when fewer GraphQL points remain
+  pypi_concurrency: 4
+
+gate1:
+  min_projected_failures: 1000     # idea doc: "on track for 1,000+ at full scale"
+  risky_projected_failures: 500
+  max_pull_failure_rate: 0.20
