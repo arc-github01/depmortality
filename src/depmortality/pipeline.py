@@ -384,6 +384,11 @@ def stage_pull(ctx: Context) -> None:
     classifiers.rename({"name": "package"}).select(
         "package", "version", "classifiers"
     ).write_parquet(ctx.interim("release_classifiers"))
+    aliases = _repo_aliases(ctx, classifiers, pilot)
+    aliases.write_parquet(ctx.interim("repo_aliases"))
+    log.info(
+        "repo aliases: %d earlier names for %d repos", aliases.height, aliases["repo"].n_unique()
+    )
 
     # git: commit-only clones, in parallel; results and failures are cached.
     repos = sorted(set(pkg_repo.values()))
@@ -488,11 +493,24 @@ def stage_pull(ctx: Context) -> None:
         # deps.dev's original-case slug.
         case_names = pilot.join(found.select("repo"), on="repo", how="semi")["repo_case"]
         mirror_names = sorted(
-            set(found["name_with_owner"].drop_nulls().to_list()) | set(case_names.to_list())
+            set(found["name_with_owner"].drop_nulls().to_list())
+            | set(case_names.to_list())
+            | set(aliases["alias"].to_list())
         )
         mirror = MirrorClient(ctx.http, ctx.cache)
         raw = mirror.events(
             mirror_names, ctx.settings.pilot.gha_start, ctx.settings.splits.data_freeze
+        )
+        # A reused old name belongs to our repo only before the new repo was created.
+        cutoffs = aliases.filter(pl.col("until").is_not_null()).select(
+            pl.col("alias").str.to_lowercase().alias("repo_name"), "until"
+        )
+        raw = (
+            raw.join(cutoffs, on="repo_name", how="left")
+            .filter(
+                pl.col("until").is_null() | (pl.col("created_at").cast(pl.Date) < pl.col("until"))
+            )
+            .drop("until")
         )
         id_to_repo: dict[int, str] = {}
     else:
@@ -521,10 +539,14 @@ def stage_pull(ctx: Context) -> None:
     repo_to_packages: dict[str, list[str]] = {}
     for name, repo in pkg_repo.items():
         repo_to_packages.setdefault(repo, []).append(name)
-    # Renamed repos: GH Archive may carry the new name; map it back to the deps.dev slug.
+    # Renamed repos: GH Archive carries the name at event time; map current and earlier
+    # names back to the deps.dev slug.
     for r, nwo in found.select("repo", "name_with_owner").drop_nulls().iter_rows():
         if nwo.lower() != r:
             repo_to_packages.setdefault(nwo.lower(), repo_to_packages.get(r, []))
+    for r, alias in aliases.select("repo", "alias").iter_rows():
+        if alias.lower() != r and r in repo_to_packages:
+            repo_to_packages.setdefault(alias.lower(), repo_to_packages[r])
     gharchive.to_events(raw, repo_to_packages, id_to_repo).write_parquet(ctx.interim("gha_events"))
 
     pl.DataFrame(
@@ -533,6 +555,42 @@ def stage_pull(ctx: Context) -> None:
     ).write_parquet(ctx.interim("pull_status"))
     counts = Counter((r["step"], r["ok"]) for r in ctx.status_rows)
     log.info("pull status: %s", dict(counts))
+
+
+def _repo_aliases(ctx: Context, classifiers: pl.DataFrame, pilot: pl.DataFrame) -> pl.DataFrame:
+    """Earlier GitHub names of pilot repos (free; DECISIONS.md, rename recovery).
+
+    Candidates are GitHub URLs in the package's historical release metadata. GitHub resolves
+    a renamed repo's old name to the same repository id, which confirms the alias. If the old
+    name now belongs to a different, newer repository (a reused name), the alias holds only
+    for events before that repository was created (``until``).
+    """
+    universe_repos = pl.read_parquet(ctx.interim("universe_repos")).filter(pl.col("found"))
+    ids = dict(universe_repos.select("repo", "database_id").iter_rows())
+    pkg_repo = dict(pilot.select("name", "repo").iter_rows())
+    candidates: dict[str, set[str]] = {}
+    cols = classifiers.select("name", "home_page", "download_url", "project_urls")
+    for pkg, home, dl, urls in cols.iter_rows():
+        repo = pkg_repo.get(pkg)
+        if repo is None or repo not in ids:
+            continue
+        text = " ".join([home or "", dl or "", *(urls or [])])
+        for slug in depsdev.github_slugs_in(text):
+            if slug.lower() != repo:
+                candidates.setdefault(repo, set()).add(slug)
+    flat = sorted({slug for slugs in candidates.values() for slug in slugs})
+    metas = {m.repo: m for m in GitHubClient(ctx.http, ctx.cache).repos(flat)}
+    rows: list[dict[str, Any]] = []
+    for repo, slugs in sorted(candidates.items()):
+        for slug in sorted(slugs):
+            meta = metas.get(slug)
+            if meta is None or not meta.found:
+                continue
+            if meta.database_id == ids[repo]:
+                rows.append({"repo": repo, "alias": slug, "until": None})
+            elif meta.created_at is not None:
+                rows.append({"repo": repo, "alias": slug, "until": meta.created_at})
+    return pl.DataFrame(rows, schema={"repo": pl.String, "alias": pl.String, "until": pl.Date})
 
 
 # ---- stages: build, report ----------------------------------------------------------------

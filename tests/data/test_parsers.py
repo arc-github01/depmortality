@@ -199,3 +199,9 @@ def test_pilot_selection_is_seeded_stratified_and_weighted(settings: object) -> 
     assert tail["weight"].sum() == pytest.approx(3000 - 50)
     other = depsdev.select_pilot(uni, _cfg(cfg, seed=cfg.seed + 1))
     assert not other.equals(a)
+
+
+def test_github_slugs_in_metadata() -> None:
+    text = "https://github.com/mitsuhiko/flask.git https://github.com/sponsors/x git@github.com:Psf/requests"
+    assert depsdev.github_slugs_in(text) == {"mitsuhiko/flask", "Psf/requests"}
+    assert depsdev.github_slugs_in(None) == set()

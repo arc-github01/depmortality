@@ -131,12 +131,28 @@ def sql_first_upload() -> tuple[str, list[Param]]:
 def sql_release_classifiers(names: list[str]) -> tuple[str, list[Param]]:
     sql = f"""
     SELECT REGEXP_REPLACE(LOWER(name), r'[-_.]+', '-') AS name, version,
-           MIN(upload_time) AS first_upload, ANY_VALUE(classifiers) AS classifiers
+           MIN(upload_time) AS first_upload, ANY_VALUE(classifiers) AS classifiers,
+           ANY_VALUE(home_page) AS home_page, ANY_VALUE(download_url) AS download_url,
+           ANY_VALUE(project_urls) AS project_urls
     FROM `{PYPI_DATASET}.distribution_metadata`
     WHERE REGEXP_REPLACE(LOWER(name), r'[-_.]+', '-') IN UNNEST(@names)
     GROUP BY name, version
     """
     return sql, [Param("names", "ARRAY<STRING>", sorted(names))]
+
+
+_GITHUB_URL = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)")
+_NOT_OWNERS = frozenset({"sponsors", "orgs", "users", "features", "topics", "marketplace", "apps"})
+
+
+def github_slugs_in(text: str | None) -> set[str]:
+    """Original-case 'owner/repo' slugs mentioned in a URL or metadata string."""
+    out = set()
+    for owner, repo in _GITHUB_URL.findall(text or ""):
+        repo = repo.removesuffix(".git").rstrip(".")
+        if owner.lower() not in _NOT_OWNERS and repo:
+            out.add(f"{owner}/{repo}")
+    return out
 
 
 # ---- universe and pilot --------------------------------------------------------------------

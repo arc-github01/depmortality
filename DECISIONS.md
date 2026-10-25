@@ -230,3 +230,15 @@ unaffected. To avoid falsely "Quiet" packages in the late test period, `data_fre
 from 2026-10-31 to **2025-09-30**. The test period becomes 2023-01 → 2025-09 (33 months).
 That still covers 24-month horizons from end-2022 lockfiles, with 9 months to spare.
 `author_association` is recorded from **2017-09**; before that the as_of fallback applies.
+
+## 2026-10-26 — No paid queries; rename recovery done for free
+
+Owner instruction: spend no money, accept a somewhat compromised project. All BigQuery work
+stays inside the 50 GB phase budget (well within BigQuery's free monthly query allowance),
+and the 418 GB rename-history query is dropped. Instead, earlier GitHub names of pilot repos
+come from GitHub URLs in each package's historical PyPI metadata (`home_page`,
+`download_url`, `project_urls`; added to the pilot classifier query Q4b). A candidate counts
+as an alias only if GitHub resolves it to the same repository id (GitHub redirects renamed
+repos). If the old name now belongs to a different, newer repository, the alias holds only
+for events before that repository's creation date. Renames never written into PyPI metadata
+are still missed: a known, unquantified undercount of early replies.
