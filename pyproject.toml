@@ -51,7 +51,7 @@ ignore = ["S101", "S603", "S607", "N818"]
 "src/depmortality/reports/**" = ["E501", "RUF001", "RUF002"]
 # SQL builders: table names are module constants or validated identifiers; values are bound
 # as query parameters.
-"src/depmortality/data/{depsdev,gharchive}.py" = ["S608"]
+"src/depmortality/data/{depsdev,gharchive,gha_mirror}.py" = ["S608"]
 
 [tool.mypy]
 python_version = "3.12"

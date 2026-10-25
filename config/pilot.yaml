@@ -2,6 +2,12 @@
 snapshot_date: 2026-10-26     # cache key date for every raw pull in this snapshot
 seed: 20261026
 
+# Where GH Archive events come from (DECISIONS.md 2026-10-26, GH Archive source):
+#   clickhouse_mirror - free public mirror, verified against BigQuery on sampled days
+#   bigquery          - one-pass extraction (~32 TB; needs per-year approvals)
+gha_source: clickhouse_mirror
+gha_start: 2011-01-01         # earliest events read (pre-origin pushes are write evidence)
+
 n_top: 1000                   # census of the most depended-upon qualifying packages
 n_tail: 1000                  # stratified random sample from the rest
 

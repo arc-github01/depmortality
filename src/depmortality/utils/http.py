@@ -97,8 +97,15 @@ class HttpClient:
         except ValueError:
             return
 
-    def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
-        """Returns the response for 2xx and non-retryable 4xx; the caller handles 404 etc."""
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        retry_statuses: frozenset[int] = RETRY_STATUSES,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Returns the response for 2xx and non-retryable statuses; the caller handles them."""
         last: str = ""
         for attempt in range(self.cfg.max_retries + 1):
             try:
@@ -109,7 +116,7 @@ class HttpClient:
                 continue
             self.calls[response.url.host] += 1
             wait = self._rate_limit_wait(response)
-            if response.status_code in RETRY_STATUSES or (
+            if response.status_code in retry_statuses or (
                 response.status_code == 403 and wait is not None
             ):
                 last = f"HTTP {response.status_code}"

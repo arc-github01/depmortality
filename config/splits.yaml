@@ -3,4 +3,4 @@ train_end: 2021-12-31        # train on data observable up to and including this
 calibration_start: 2022-01-01
 calibration_end: 2022-12-31  # tune and calibrate on outcomes in 2022
 test_start: 2023-01-01       # test on outcomes from here to the data freeze
-data_freeze: 2026-10-31      # last date of data used anywhere
+data_freeze: 2025-09-30      # last date of data used anywhere (DECISIONS.md: GH Archive degraded after)

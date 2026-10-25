@@ -96,6 +96,8 @@ class HandcheckConfig(_Strict):
 class PilotConfig(_Strict):
     snapshot_date: dt.date
     seed: int
+    gha_source: Literal["clickhouse_mirror", "bigquery"]
+    gha_start: dt.date
     n_top: int = Field(ge=0)
     n_tail: int = Field(ge=0)
     cohort_first_release_start: dt.date

@@ -26,6 +26,7 @@ from dotenv import load_dotenv
 
 from depmortality.config import Settings, load_settings
 from depmortality.data import depsdev, gharchive
+from depmortality.data.gha_mirror import MirrorClient
 from depmortality.data.github import GitHubClient
 from depmortality.data.gitlog import CloneFailed, commits_for
 from depmortality.data.osv import OSVClient
@@ -284,6 +285,9 @@ def stage_select(ctx: Context) -> None:
 
 # ---- stage: extract -----------------------------------------------------------------------
 def stage_extract(ctx: Context) -> None:
+    if ctx.settings.pilot.gha_source != "bigquery":
+        log.info("gha_source=%s: no BigQuery extraction needed", ctx.settings.pilot.gha_source)
+        return
     marker = ctx.paths.interim / "gha_extract_done.json"
     done: dict[str, str] = json.loads(marker.read_text()) if marker.exists() else {}
     if ctx.cache_only:
@@ -475,32 +479,45 @@ def stage_pull(ctx: Context) -> None:
         },
     ).write_parquet(ctx.interim("advisories"))
 
-    # GH Archive: read pilot rows from the slim tables.
-    project, dataset = (
-        _dataset()
-        if not ctx.cache_only
-        else (
-            os.environ.get("GOOGLE_CLOUD_PROJECT", ""),
-            os.environ.get("DEPMORTALITY_BQ_DATASET", "depmortality"),
-        )
-    )
+    # GH Archive events for the pilot repos.
     found = universe_repos.join(pilot.select("repo").unique(), on="repo", how="semi").filter(
         pl.col("found")
     )
-    ids = [int(i) for i in found["database_id"].drop_nulls().to_list()]
-    gh_names = found["repo"].to_list() + [
-        n.lower() for n in found["name_with_owner"].drop_nulls().to_list()
-    ]
-    raw = _frame(
-        ctx.bq.run(
-            gharchive.pilot_read_sql(project, dataset),
-            gharchive.extraction_params(ids, gh_names),
-            "Q6 GH Archive pilot read",
+    if ctx.settings.pilot.gha_source == "clickhouse_mirror":
+        # The mirror matches repo names case-sensitively: use the canonical GitHub name and
+        # deps.dev's original-case slug.
+        case_names = pilot.join(found.select("repo"), on="repo", how="semi")["repo_case"]
+        mirror_names = sorted(
+            set(found["name_with_owner"].drop_nulls().to_list()) | set(case_names.to_list())
         )
-    )
-    id_to_repo = {
-        int(i): r for r, i in found.select("repo", "database_id").drop_nulls().iter_rows()
-    }
+        mirror = MirrorClient(ctx.http, ctx.cache)
+        raw = mirror.events(
+            mirror_names, ctx.settings.pilot.gha_start, ctx.settings.splits.data_freeze
+        )
+        id_to_repo: dict[int, str] = {}
+    else:
+        project, dataset = (
+            _dataset()
+            if not ctx.cache_only
+            else (
+                os.environ.get("GOOGLE_CLOUD_PROJECT", ""),
+                os.environ.get("DEPMORTALITY_BQ_DATASET", "depmortality"),
+            )
+        )
+        ids = [int(i) for i in found["database_id"].drop_nulls().to_list()]
+        gh_names = found["repo"].to_list() + [
+            n.lower() for n in found["name_with_owner"].drop_nulls().to_list()
+        ]
+        raw = _frame(
+            ctx.bq.run(
+                gharchive.pilot_read_sql(project, dataset),
+                gharchive.extraction_params(ids, gh_names),
+                "Q6 GH Archive pilot read",
+            )
+        )
+        id_to_repo = {
+            int(i): r for r, i in found.select("repo", "database_id").drop_nulls().iter_rows()
+        }
     repo_to_packages: dict[str, list[str]] = {}
     for name, repo in pkg_repo.items():
         repo_to_packages.setdefault(repo, []).append(name)

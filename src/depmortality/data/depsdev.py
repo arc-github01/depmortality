@@ -50,7 +50,8 @@ REQUIRED_COLUMNS: dict[str, set[str]] = {
     },
 }
 
-_GITHUB_PROJECT = re.compile(r"^github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
+# deps.dev stores GITHUB project names as "owner/repo"; accept a "github.com/" prefix too.
+_GITHUB_PROJECT = re.compile(r"^(?:github\.com/)?([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
 
 
 def normalise_name(name: str) -> str:
@@ -59,7 +60,7 @@ def normalise_name(name: str) -> str:
 
 
 def github_repo(project_name: str) -> str | None:
-    """'github.com/Owner/Repo' -> 'owner/repo' (lower-cased), else None."""
+    """'Owner/Repo' or 'github.com/Owner/Repo' -> 'owner/repo' (lower-cased), else None."""
     m = _GITHUB_PROJECT.match(project_name.strip())
     if not m:
         return None
@@ -148,11 +149,16 @@ def choose_repo(mapping: pl.DataFrame) -> pl.DataFrame:
             .map_elements(lambda p: github_repo(p) or "", return_dtype=pl.String)
             .alias("repo"),
             pl.col("relation").str.contains("SOURCE").fill_null(False).alias("_source"),
+            # Original case, needed where repo names are matched case-sensitively.
+            pl.col("project")
+            .str.replace(r"^github\.com/", "")
+            .str.replace(r"\.git$", "")
+            .alias("repo_case"),
         )
         .filter(pl.col("repo") != "")
         .sort(["name", "_source", "n_versions", "repo"], descending=[False, True, True, False])
     )
-    return rows.group_by("name", maintain_order=True).first().select("name", "repo")
+    return rows.group_by("name", maintain_order=True).first().select("name", "repo", "repo_case")
 
 
 def build_universe(

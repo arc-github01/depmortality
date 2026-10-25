@@ -197,3 +197,36 @@ the next day hits the cache. A new snapshot = a new date in config = a fresh pul
   until the owner scores the hand check.
 - **Test fixtures** are trimmed real API responses (six, numpy, one Pillow advisory) with
   author names and emails replaced by placeholders, so no real emails are committed.
+
+## 2026-10-26 — GH Archive source: free ClickHouse mirror instead of BigQuery (provisional)
+
+The BigQuery dry-run priced the one-pass extraction at **32,429 GB** (2012–2026; 2022 alone
+5.1 TB), i.e. roughly US$185 on-demand. Alternative found: the public ClickHouse playground
+(`play.clickhouse.com`, user `play`, table `github_events`) mirrors GH Archive with
+`author_association`, `action` and all needed event types, indexed by repo name.
+**Verification against BigQuery (2026-10-26):** per-type event counts on 2020-01-15 match
+(IssueCommentEvent identical; PullRequestEvent 181,042 vs 181,091); total and comment counts
+on 2026-01-15, 2026-07-15 and 2026-10-15 are identical. Cost of the checks: < 0.2 GB.
+**Choice (provisional, owner to confirm):** `pilot.gha_source: clickhouse_mirror`.
+BigQuery remains selectable (`bigquery`).
+Known differences: no `repo.id`, only the name at event time, so events under a repo's
+earlier names are missed (e.g. `mitsuhiko/flask` until 2016-03, `kennethreitz/requests`);
+`author_association` `NONE` also encodes "not recorded" (mapped to null outside the
+recording window); no issue-vs-PR flag on comments (both count as replies). Playground limits:
+1M result rows and 60 s per query; the client splits batches on limit errors.
+**Threat to validity:** a third-party copy. Keep the sampled BigQuery cross-checks.
+**Rename gap fix, needs approval:** a BigQuery query reading only `repo.id` + `repo.name`
+(no payload) recovers every historical name per repo; dry-run 418 GB (~US$2.4).
+
+## 2026-10-26 — Data freeze moved to 2025-09-30 (provisional)
+
+Measured on the mirror and confirmed on BigQuery: GH Archive payloads stop carrying
+`author_association` after 2025-10 (share of IssueCommentEvents with an association:
+70% in 2025-09, 27% in 2025-10, 0% from 2025-11), consistent with GitHub's late-2025 Events
+API payload change; and comment events nearly vanish in mid-2026 (2026-07-15: 4,974
+IssueCommentEvents vs 118,803 on 2026-01-15), with total volume also collapsing by
+2026-10-15. Both are upstream GH Archive issues, not mirror issues. Git and PyPI data are
+unaffected. To avoid falsely "Quiet" packages in the late test period, `data_freeze` moves
+from 2026-10-31 to **2025-09-30**. The test period becomes 2023-01 → 2025-09 (33 months).
+That still covers 24-month horizons from end-2022 lockfiles, with 9 months to spare.
+`author_association` is recorded from **2017-09**; before that the as_of fallback applies.

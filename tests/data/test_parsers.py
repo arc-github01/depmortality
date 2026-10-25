@@ -119,6 +119,7 @@ def test_commit_login_query_and_parse() -> None:
 def test_github_repo_from_project_name() -> None:
     assert depsdev.github_repo("github.com/Benjaminp/Six") == "benjaminp/six"
     assert depsdev.github_repo("github.com/a/b.git") == "a/b"
+    assert depsdev.github_repo("factset/enterprise-sdk") == "factset/enterprise-sdk"
     assert depsdev.github_repo("gitlab.com/a/b") is None
     assert depsdev.normalise_name("Zope.Interface") == "zope-interface"
 

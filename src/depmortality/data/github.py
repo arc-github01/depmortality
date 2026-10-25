@@ -60,6 +60,14 @@ def _split(repo: str) -> tuple[str, str]:
     return owner, name
 
 
+def _is_safe(repo: str) -> bool:
+    try:
+        _split(repo)
+    except ValueError:
+        return False
+    return True
+
+
 def repo_query(repos: Sequence[str]) -> str:
     parts = []
     for i, repo in enumerate(repos):
@@ -144,7 +152,10 @@ class GitHubClient:
 
     def repos(self, repos: Sequence[str]) -> list[RepoMeta]:
         out: list[RepoMeta] = []
-        ordered = sorted(set(repos))
+        unique = sorted(set(repos))
+        # Names that can't be placed safely in a query are reported as not found.
+        ordered = [r for r in unique if _is_safe(r)]
+        out.extend(RepoMeta(repo=r, found=False) for r in unique if not _is_safe(r))
         for start in range(0, len(ordered), REPOS_PER_QUERY):
             chunk = ordered[start : start + REPOS_PER_QUERY]
             out.extend(parse_repo_response(chunk, self._graphql(repo_query(chunk), "github_repos")))
