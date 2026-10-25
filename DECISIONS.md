@@ -167,3 +167,33 @@ Alternative: 2026-11-30, which would push the pulls past the Gate 1 date.
 
 The cache "date" key is `pilot.snapshot_date` from config, not the run date, so a re-run
 the next day hits the cache. A new snapshot = a new date in config = a fresh pull.
+
+## 2026-10-26 — Implementation choices made while building Phase 0
+
+- **No git history → not analysed.** A package whose clone failed would look falsely Quiet,
+  so it is excluded from the panel and counted as a pull failure with its reason. Clone
+  failures are cached (so a cache-only rebuild reproduces them); `--refresh` retries them.
+- **GH Archive rows.** Deduplicated by event id; comment edits/deletions dropped (only
+  `created`/`submitted`/`opened`/`published` actions count). Rows match on `repo.id` or on the
+  lower-cased repo name, because `repo.id` may be missing in early years. Renamed repos map
+  back to the deps.dev slug.
+- **Quiet → Failed KM is measured from Quiet confirmation (L + W)**, not from L. Under the
+  state-machine rule, a failure inside the W-month window is Active → Failed, so measuring
+  from L would put a structural zero in the first W months. **Open question for Phase 1:**
+  the multi-state model has the same tension: the Quiet state is entered at L, but
+  failures in (L, L + W) are counted as Active → Failed.
+- **Repo slugs in processed tables.** `owner/repo` is public package metadata and is kept for
+  joins, but for user-owned repos the owner is a person's handle. The released dataset
+  (Phase 5) must hash or drop it.
+- **PEP 792 exposure checked live (2026-10-26):** the Simple API JSON (api-version 1.4)
+  returns `project-status` (e.g. six → `active`). Gate 1 reports how many pilot packages
+  are archived/deprecated; the API gives no status date.
+- **Full-scale projection** = stratified Horvitz–Thompson total of failed packages using the
+  pilot's selection weights, nonresponse handled as missing-at-random within strata, SRSWOR
+  variance with finite-population correction. Stated in the report with its assumptions.
+- **Gate 1 verdict rule** (thresholds in `config/thresholds.yaml`, `gate1:`): viable if the
+  projection ≥ 1,000; risky if 500–1,000, if the 95% interval's lower end is below 1,000, or if
+  more than 20% of pilot packages failed to pull; not viable below 500. Always provisional
+  until the owner scores the hand check.
+- **Test fixtures** are trimmed real API responses (six, numpy, one Pillow advisory) with
+  author names and emails replaced by placeholders, so no real emails are committed.

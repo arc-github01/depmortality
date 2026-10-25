@@ -47,6 +47,11 @@ ignore = ["S101", "S603", "S607", "N818"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "N802", "E501", "E741"]
+# Report generators are mostly prose: long sentences and typographic dashes are intended.
+"src/depmortality/reports/**" = ["E501", "RUF001", "RUF002"]
+# SQL builders: table names are module constants or validated identifiers; values are bound
+# as query parameters.
+"src/depmortality/data/{depsdev,gharchive}.py" = ["S608"]
 
 [tool.mypy]
 python_version = "3.12"

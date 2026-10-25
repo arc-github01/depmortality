@@ -59,6 +59,6 @@ def test_seeds_are_deterministic() -> None:
 
 def test_env_file_is_gitignored() -> None:
     lines = (REPO_ROOT / ".gitignore").read_text().splitlines()
-    assert ".env" in lines and "data/" in lines
+    assert ".env" in lines and "/data/" in lines
     assert not (REPO_ROOT / ".env").exists() or ".env" in lines
     assert isinstance(REPO_ROOT, Path)
