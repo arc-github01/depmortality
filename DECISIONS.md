@@ -274,3 +274,11 @@ silently meant "no advisories" for trigger (b). Fix: read OSV's free bulk export
 the pull now fails instead of writing an empty table.
 Also fixed: the per-repo commit lists sent to GitHub were in a different order on each run
 (unordered group_by), so cached responses were never reused. Batches are now sorted by sha.
+
+## 2026-10-26 — Build stage runs in package chunks (memory)
+
+Same cause as the pull-stage stops: the build joined all commits and GH Archive events in
+one frame. Identity merging stays global, but now runs on the distinct
+(repo, login, email) keys only. Events, bot flags, maintainer flags, the panel and
+post-failure activity are computed per chunk of 100 packages, reading the two big interim
+tables lazily. A test checks that chunk size 1 gives tables identical to a single chunk.

@@ -242,3 +242,16 @@ def test_reports_render(built: DataPaths, settings: Settings, tmp_path: Path) ->
     assert "## Verdict" in md and "provisional" in md
     assert (out / "figures" / "gate1_km_time_to_quiet.png").exists()
     assert "CloneFailed" in md
+
+
+def test_chunked_build_matches_single_chunk(
+    built: DataPaths, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import depmortality.build as build_module
+
+    whole = build(Interim.read(built.interim), settings, SALT)
+    monkeypatch.setattr(build_module, "BUILD_CHUNK", 1)
+    chunked = build(Interim.read(built.interim), settings, SALT)
+    for name in whole.__dataclass_fields__:
+        a, b = getattr(whole, name), getattr(chunked, name)
+        assert a.sort(a.columns).equals(b.sort(b.columns)), name

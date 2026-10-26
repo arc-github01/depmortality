@@ -10,6 +10,7 @@ import datetime as dt
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 
@@ -44,23 +45,37 @@ log = logging.getLogger(__name__)
 EMAIL_LIKE = r"[^@\s]+@[^@\s]+\.[A-Za-z]{2,}"
 
 
+# The two big event tables are read lazily and processed in package chunks: the pilot's
+# 3.9 M commits and GH Archive events do not fit in memory at once (DECISIONS.md).
+LAZY_TABLES = ("commits", "gha_events")
+BUILD_CHUNK = 100  # packages per chunk
+
+
 @dataclass(frozen=True)
 class Interim:
     pilot: pl.DataFrame
     releases: pl.DataFrame
     release_classifiers: pl.DataFrame
     pypi_meta: pl.DataFrame
-    commits: pl.DataFrame
+    commits: pl.DataFrame | pl.LazyFrame
     commit_logins: pl.DataFrame
     github_repos: pl.DataFrame
     advisories: pl.DataFrame
-    gha_events: pl.DataFrame
+    gha_events: pl.DataFrame | pl.LazyFrame
 
     @classmethod
     def read(cls, root: Path) -> Interim:
-        return cls(
-            **{name: pl.read_parquet(root / f"{name}.parquet") for name in cls.__dataclass_fields__}
-        )
+        tables: dict[str, Any] = {
+            name: (pl.scan_parquet if name in LAZY_TABLES else pl.read_parquet)(
+                root / f"{name}.parquet"
+            )
+            for name in cls.__dataclass_fields__
+        }
+        return cls(**tables)
+
+
+def _lazy(frame: pl.DataFrame | pl.LazyFrame) -> pl.LazyFrame:
+    return frame.lazy() if isinstance(frame, pl.DataFrame) else frame
 
 
 @dataclass(frozen=True)
@@ -92,10 +107,16 @@ def assert_no_identities(frame: pl.DataFrame, name: str) -> None:
 
 
 # ---- events -------------------------------------------------------------------------------
-def commit_events(commits: pl.DataFrame, logins: pl.DataFrame) -> pl.DataFrame:
-    mapped = logins.select(
-        "repo", pl.col("email").str.to_lowercase().alias("_email"), pl.col("login").alias("_login")
-    ).unique(subset=["repo", "_email"], keep="first")
+def commit_events(commits: pl.LazyFrame, logins: pl.DataFrame) -> pl.LazyFrame:
+    mapped = (
+        logins.lazy()
+        .select(
+            "repo",
+            pl.col("email").str.to_lowercase().alias("_email"),
+            pl.col("login").alias("_login"),
+        )
+        .unique(subset=["repo", "_email"], keep="first")
+    )
     return (
         commits.with_columns(pl.col("author_email").str.to_lowercase().alias("_email"))
         .join(mapped, on=["repo", "_email"], how="left")
@@ -113,38 +134,67 @@ def commit_events(commits: pl.DataFrame, logins: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def release_events(releases: pl.DataFrame, pilot: pl.DataFrame) -> pl.DataFrame:
-    return releases.join(
-        pilot.select(pl.col("name").alias("package"), "repo"), on="package"
-    ).select(
-        "package",
-        "repo",
-        pl.col("upload_day").alias("day"),
-        pl.lit("pypi").alias("source"),
-        pl.lit("release").alias("kind"),
-        *[
-            pl.lit(None, dtype=pl.String).alias(c)
-            for c in ("actor_login", "actor_name", "actor_email", "author_association")
-        ],
+def release_events(releases: pl.DataFrame, pilot: pl.DataFrame) -> pl.LazyFrame:
+    return (
+        releases.lazy()
+        .join(pilot.lazy().select(pl.col("name").alias("package"), "repo"), on="package")
+        .select(
+            "package",
+            "repo",
+            pl.col("upload_day").alias("day"),
+            pl.lit("pypi").alias("source"),
+            pl.lit("release").alias("kind"),
+            *[
+                pl.lit(None, dtype=pl.String).alias(c)
+                for c in ("actor_login", "actor_name", "actor_email", "author_association")
+            ],
+        )
     )
 
 
-def resolve_people(events: pl.DataFrame, interim: Interim, salt: str) -> pl.DataFrame:
-    """Adds the hashed ``person`` column. Merging rules: labels/identity.py."""
+def _events_lazy(interim: Interim, packages: list[str] | None = None) -> pl.LazyFrame:
+    """All events without ``person``; optionally only those of ``packages``."""
+
+    def only(frame: pl.LazyFrame) -> pl.LazyFrame:
+        return frame if packages is None else frame.filter(pl.col("package").is_in(packages))
+
+    return pl.concat(
+        [
+            commit_events(only(_lazy(interim.commits)), interim.commit_logins),
+            only(release_events(interim.releases, interim.pilot)),
+            only(_lazy(interim.gha_events)).select(*(c for c in EVENT_SCHEMA if c != "person")),
+        ],
+        how="vertical_relaxed",
+    )
+
+
+def person_table(interim: Interim, salt: str) -> pl.DataFrame:
+    """Hashed ``person`` per (repo, actor_login, actor_email). Merging: labels/identity.py.
+
+    Identities merge across packages, so this runs over all events at once, but only on
+    the distinct identifier keys, never on the events themselves.
+    """
+    keys = (
+        _events_lazy(interim)
+        .select("package", "repo", "actor_login", "actor_email")
+        .unique()
+        .collect()
+    )
     r = IdentityResolver()
     for repo, email in (
-        events.filter(pl.col("actor_email").is_not_null())
+        keys.filter(pl.col("actor_email").is_not_null())
         .select("repo", "actor_email")
         .unique()
+        .sort("repo", "actor_email")
         .iter_rows()
     ):
         r.add_email(email, repo)
     for repo, email, login in interim.commit_logins.select("repo", "email", "login").iter_rows():
         r.link_email_login(email, login, repo)
     repo_logins = (
-        events.filter(pl.col("actor_login").is_not_null())
+        keys.filter(pl.col("actor_login").is_not_null())
         .group_by("package")
-        .agg(pl.col("actor_login").unique())
+        .agg(pl.col("actor_login").unique().sort())
     )
     roles = interim.pypi_meta.select("package", "roles")
     for _package, accounts, logins in roles.join(repo_logins, on="package", how="left").iter_rows():
@@ -158,12 +208,9 @@ def resolve_people(events: pl.DataFrame, interim: Interim, salt: str) -> pl.Data
             return hash_person(r.person(email_key(email, repo)), salt)
         return None
 
-    keys = events.select("repo", "actor_login", "actor_email").unique()
-    hashed = [person(row) for row in keys.iter_rows()]
-    keyed = keys.with_columns(pl.Series("person", hashed, dtype=pl.String))
-    return events.join(
-        keyed, on=["repo", "actor_login", "actor_email"], how="left", nulls_equal=True
-    )
+    distinct = keys.select("repo", "actor_login", "actor_email").unique()
+    hashed = [person(row) for row in distinct.iter_rows()]
+    return distinct.with_columns(pl.Series("person", hashed, dtype=pl.String))
 
 
 # ---- triggers -----------------------------------------------------------------------------
@@ -246,23 +293,14 @@ def build(interim: Interim, settings: Settings, salt: str) -> Processed:
     window = settings.thresholds.states.quiet_window_months
     pilot = interim.pilot.rename({"name": "package"})
 
-    events = pl.concat(
-        [
-            commit_events(interim.commits, interim.commit_logins),
-            release_events(interim.releases, interim.pilot),
-            interim.gha_events.select(*(c for c in EVENT_SCHEMA if c != "person")),
-        ],
-        how="vertical_relaxed",
-    )
-    events = resolve_people(events, interim, salt).select(list(EVENT_SCHEMA))
-    events = flag_maintainer_activity(flag_bots(events, bots))
+    people = person_table(interim, salt)
 
     origins = interim.releases.group_by("package").agg(
         pl.col("upload_day").min().alias("origin_day")
     )
     # A package without its git history would look falsely Quiet, so it is excluded (and
     # reported as a pull failure) rather than analysed with commits missing.
-    with_git = interim.commits.select("package").unique()
+    with_git = _lazy(interim.commits).select("package").unique().collect()
     spans = (
         pilot.select("package")
         .join(with_git, on="package", how="semi")
@@ -277,8 +315,8 @@ def build(interim: Interim, settings: Settings, salt: str) -> Processed:
             pl.lit(freeze_month, dtype=pl.Int32).alias("end_month"),
         )
         .filter(pl.col("origin_month") <= pl.col("end_month"))
+        .sort("package")
     )
-    panel = build_panel(events, spans)
 
     trig_rows: list[dict[str, object]] = []
     sig_rows: list[dict[str, object]] = []
@@ -293,28 +331,56 @@ def build(interim: Interim, settings: Settings, salt: str) -> Processed:
         first = first_failure(trig)
         if first is not None and first.day is not None:
             failures[package] = Failure(month_index(first.day), first.kind)
-    states, transitions = states_from_panel(panel, failures, window)
-
-    post_failure = (
-        events.filter(pl.col("is_maintainer_activity"))
-        .with_columns(
-            (
-                pl.col("day").dt.year().cast(pl.Int32) * 12
-                + pl.col("day").dt.month().cast(pl.Int32)
-                - 1
-            ).alias("month")
-        )
-        .join(
-            pl.DataFrame(
-                {"package": list(failures), "fail_month": [f.month for f in failures.values()]},
-                schema={"package": pl.String, "fail_month": pl.Int32},
-            ),
-            on="package",
-        )
-        .filter((pl.col("month") > pl.col("fail_month")) & (pl.col("month") <= freeze_month))
-        .group_by("package")
-        .len("post_failure_activity")
+    fail_months = pl.DataFrame(
+        {"package": list(failures), "fail_month": [f.month for f in failures.values()]},
+        schema={"package": pl.String, "fail_month": pl.Int32},
     )
+
+    # Everything below is per package, so it runs on chunks of packages.
+    panels: list[pl.DataFrame] = []
+    posts: list[pl.DataFrame] = []
+    names = spans["package"].to_list()
+    for start in range(0, len(names), BUILD_CHUNK):
+        chunk = names[start : start + BUILD_CHUNK]
+        events = (
+            _events_lazy(interim, chunk)
+            .join(
+                people.lazy(),
+                on=["repo", "actor_login", "actor_email"],
+                how="left",
+                nulls_equal=True,
+            )
+            .select(list(EVENT_SCHEMA))
+            .collect()
+        )
+        events = flag_maintainer_activity(flag_bots(events, bots))
+        panels.append(build_panel(events, spans.filter(pl.col("package").is_in(chunk))))
+        posts.append(
+            events.filter(pl.col("is_maintainer_activity"))
+            .with_columns(
+                (
+                    pl.col("day").dt.year().cast(pl.Int32) * 12
+                    + pl.col("day").dt.month().cast(pl.Int32)
+                    - 1
+                ).alias("month")
+            )
+            .join(fail_months, on="package")
+            .filter((pl.col("month") > pl.col("fail_month")) & (pl.col("month") <= freeze_month))
+            .group_by("package")
+            .len("post_failure_activity")
+        )
+        del events
+        log.info("build: %d/%d packages", min(start + BUILD_CHUNK, len(names)), len(names))
+    no_events = pl.DataFrame(
+        schema={**EVENT_SCHEMA, "is_bot": pl.Boolean, "is_maintainer_activity": pl.Boolean}
+    )
+    panel = pl.concat(panels).sort("package", "month") if panels else build_panel(no_events, spans)
+    post_failure = (
+        pl.concat(posts)
+        if posts
+        else pl.DataFrame(schema={"package": pl.String, "post_failure_activity": pl.UInt32})
+    )
+    states, transitions = states_from_panel(panel, failures, window)
     gh = interim.github_repos.select("repo", "owner_type", "found", "is_fork", "created_at")
     packages = (
         pilot.join(spans, on="package", how="inner")
