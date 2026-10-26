@@ -438,8 +438,14 @@ def stage_pull(ctx: Context) -> None:
     )
     gh = GitHubClient(ctx.http, ctx.cache)
     login_rows = []
-    latest = commits.sort("committer_day").group_by("repo", "author_email").last()
-    for key, group in latest.group_by("repo"):
+    # Sorted so the GraphQL batches, and so their cache keys, are the same on every run.
+    latest = (
+        commits.sort("committer_day", "sha")
+        .group_by("repo", "author_email")
+        .last()
+        .sort("repo", "sha")
+    )
+    for key, group in latest.group_by("repo", maintain_order=True):
         shas = group["sha"].to_list()
         pairs = (
             _try(
@@ -458,7 +464,10 @@ def stage_pull(ctx: Context) -> None:
 
     # OSV advisories.
     osv = OSVClient(ctx.http, ctx.cache)
-    advisories = _try(ctx, "*", "osv", partial(osv.advisories, names)) or {}
+    advisories = _try(ctx, "*", "osv", partial(osv.dump_advisories, names))
+    if advisories is None:
+        # Without advisories trigger (b) cannot fire: missing data, not "no advisories".
+        raise RuntimeError("OSV export could not be read; see pull_status")
     adv_rows = [
         {
             "package": n,

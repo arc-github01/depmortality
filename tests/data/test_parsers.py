@@ -18,7 +18,7 @@ from depmortality.data.github import (
     repo_query,
 )
 from depmortality.data.gitlog import parse_log, parse_log_frame
-from depmortality.data.osv import parse_vuln
+from depmortality.data.osv import advisories_from_dump, parse_vuln
 from depmortality.data.pypi import parse_project_json, parse_project_status, parse_roles
 from depmortality.labels.triggers import WheelTag, parse_wheel_filename
 
@@ -207,3 +207,21 @@ def test_github_slugs_in_metadata() -> None:
     text = "https://github.com/mitsuhiko/flask.git https://github.com/sponsors/x git@github.com:Psf/requests"
     assert depsdev.github_slugs_in(text) == {"mitsuhiko/flask", "Psf/requests"}
     assert depsdev.github_slugs_in(None) == set()
+
+
+def test_osv_dump_matches_single_vuln_parse() -> None:
+    import io
+    import zipfile
+
+    raw = (FIX / "osv_GHSA-22hg-r758-rrw9.json").read_bytes()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("GHSA-22hg-r758-rrw9.json", raw)
+        zf.writestr(
+            "OTHER.json",
+            json.dumps({"id": "X", "published": "2020-01-01T00:00:00Z", "affected": []}),
+        )
+    got = advisories_from_dump(buf.getvalue(), ["pillow", "numpy"])
+    assert got["pillow"] == parse_vuln(json.loads(raw), "pillow")
+    assert len(got["pillow"]) == 1
+    assert got["numpy"] == []

@@ -259,3 +259,15 @@ is ~2 M kept events). The mirror queries now keep only the actions that `to_even
 benjaminp/six: identical event counts by kind before and after. Event ids are hashed, and
 each query's rows are mapped to events and written to disk as they arrive, instead of being
 held in memory together. Commit rows are freed before the mirror pull.
+
+## 2026-10-26 — OSV from the bulk export; stable commit-login batches
+
+`api.osv.dev` resets every connection from the pilot machine's network (IPv4 and IPv6, curl
+and httpx alike). The earlier pull therefore wrote an empty advisories table. This would have
+silently meant "no advisories" for trigger (b). Fix: read OSV's free bulk export for PyPI
+(`osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip`, 37 MB, exported 2026-10-26
+03:48 UTC), cached under the snapshot date and parsed with the same `parse_vuln`. Pilot result:
+197 packages with at least one advisory, 4,710 advisory entries. If the export cannot be read,
+the pull now fails instead of writing an empty table.
+Also fixed: the per-repo commit lists sent to GitHub were in a different order on each run
+(unordered group_by), so cached responses were never reused. Batches are now sorted by sha.

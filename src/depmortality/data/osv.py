@@ -1,9 +1,16 @@
-"""OSV advisories per PyPI package (https://api.osv.dev)."""
+"""OSV advisories per PyPI package.
+
+Two sources: the API (https://api.osv.dev) and OSV's bulk export of the PyPI ecosystem
+(``DUMP_URL``, one JSON file per advisory). The pipeline uses the export because the API
+host resets connections from the pilot machine's network (DECISIONS.md 2026-10-26).
+"""
 
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
+import zipfile
 from collections.abc import Sequence
 from typing import Any
 
@@ -15,6 +22,29 @@ from depmortality.utils.http import HttpClient
 QUERYBATCH_URL = "https://api.osv.dev/v1/querybatch"
 VULN_URL = "https://api.osv.dev/v1/vulns/{id}"
 BATCH = 500
+DUMP_URL = "https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip"
+
+
+def advisories_from_dump(data: bytes, packages: Sequence[str]) -> dict[str, list[Advisory]]:
+    """Advisories for ``packages`` from the bytes of an OSV ecosystem export zip."""
+    by_norm: dict[str, list[str]] = {}
+    for name in packages:
+        by_norm.setdefault(normalise_name(name), []).append(name)
+    out: dict[str, list[Advisory]] = {name: [] for name in packages}
+    with zipfile.ZipFile(io.BytesIO(data)) as zf:
+        for member in sorted(zf.namelist()):
+            if not member.endswith(".json"):
+                continue
+            payload = json.loads(zf.read(member))
+            hits = {
+                normalise_name((aff.get("package") or {}).get("name", ""))
+                for aff in payload.get("affected") or []
+                if (aff.get("package") or {}).get("ecosystem") == "PyPI"
+            }
+            for norm in sorted(hits & by_norm.keys()):
+                for name in by_norm[norm]:
+                    out[name].extend(parse_vuln(payload, name))
+    return out
 
 
 def _day(text: str | None) -> dt.date | None:
@@ -102,6 +132,17 @@ class OSVClient:
             self.cache.get_bytes("osv_vuln", {"id": vuln_id}, fetch)
         )
         return payload
+
+    def dump_advisories(self, packages: Sequence[str]) -> dict[str, list[Advisory]]:
+        """From the bulk export, cached per snapshot date like every other raw pull."""
+
+        def fetch() -> bytes:
+            r = self.http.request("GET", DUMP_URL)
+            r.raise_for_status()
+            return r.content
+
+        data = self.cache.get_bytes("osv_dump", {"url": DUMP_URL}, fetch, suffix="zip")
+        return advisories_from_dump(data, packages)
 
     def advisories(self, packages: Sequence[str]) -> dict[str, list[Advisory]]:
         ids = self.vuln_ids(packages)
