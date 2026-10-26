@@ -250,6 +250,9 @@ The pull stage was stopped twice by the host for low memory. Cause: 3.86 M commi
 (e.g. aws/aws-cdk × 13). Commits are now parsed straight into one polars frame per repo
 (~2 MB for aws-cdk's 18k commits) and joined to packages once. Parallel clones cut from 4 to 2.
 The columnar parser is checked against the object parser (identical dates on aws/aws-cdk).
+Update (fourth stop, same day): the joined commit table is no longer built in memory either.
+Each repo's frame is written to disk as it is parsed, the package-level table is streamed
+from those files, and the commit-login query reads only four columns lazily.
 
 ## 2026-10-26 — GH Archive mirror rows streamed to disk (memory)
 

@@ -401,16 +401,21 @@ def stage_pull(ctx: Context) -> None:
         except CloneFailed as exc:
             return repo, exc
 
-    # Columnar per repo, joined to packages once: millions of commits, several packages
-    # per repo (DECISIONS.md: holding them as Python objects ran the machine out of memory).
-    repo_frames: list[pl.DataFrame] = []
+    # One repo at a time, straight to disk: 3.9 M commits do not fit in memory alongside
+    # everything else on the pilot machine (DECISIONS.md, commit histories).
+    parts = ctx.paths.interim / "commits_parts"
+    shutil.rmtree(parts, ignore_errors=True)
+    parts.mkdir(parents=True)
     failed: dict[str, CloneFailed] = {}
     with ThreadPoolExecutor(GIT_WORKERS) as pool:
-        for repo, result in pool.map(one, repos):
+        for i, (repo, result) in enumerate(pool.map(one, repos)):
             if isinstance(result, CloneFailed):
                 failed[repo] = result
-            else:
-                repo_frames.append(result.with_columns(pl.lit(repo).alias("repo")))
+            elif result.height:
+                result.with_columns(pl.lit(repo).alias("repo")).write_parquet(
+                    parts / f"{i:05d}.parquet"
+                )
+            del result
     for name in names:
         exc = failed.get(pkg_repo[name])
         if exc is not None:
@@ -418,18 +423,17 @@ def stage_pull(ctx: Context) -> None:
         else:
             ctx.status(name, "git", True)
     repo_commits = (
-        pl.concat(repo_frames)
-        if repo_frames
-        else pl.DataFrame(schema={**COMMIT_SCHEMA, "repo": pl.String})
+        pl.scan_parquet(parts / "*.parquet")
+        if any(parts.iterdir())
+        else pl.LazyFrame(schema={**COMMIT_SCHEMA, "repo": pl.String})
     )
-    del repo_frames
-    commits = (
-        pilot.select(pl.col("name").alias("package"), "repo")
+    (
+        pilot.lazy()
+        .select(pl.col("name").alias("package"), "repo")
         .join(repo_commits, on="repo", how="inner")
         .select("package", "repo", *COMMIT_SCHEMA)
+        .sink_parquet(ctx.interim("commits"))
     )
-    del repo_commits
-    commits.write_parquet(ctx.interim("commits"))
 
     # GitHub: repo metadata (from resolve) and email -> login for one commit per email.
     universe_repos = pl.read_parquet(ctx.interim("universe_repos"))
@@ -438,12 +442,15 @@ def stage_pull(ctx: Context) -> None:
     )
     gh = GitHubClient(ctx.http, ctx.cache)
     login_rows = []
-    # Sorted so the GraphQL batches, and so their cache keys, are the same on every run.
+    # Latest commit per (repo, email), sorted so the GraphQL batches, and so their cache
+    # keys, are the same on every run.
     latest = (
-        commits.sort("committer_day", "sha")
+        repo_commits.select("repo", "author_email", "committer_day", "sha")
+        .sort("committer_day", "sha")
         .group_by("repo", "author_email")
         .last()
         .sort("repo", "sha")
+        .collect()
     )
     for key, group in latest.group_by("repo", maintain_order=True):
         shas = group["sha"].to_list()
@@ -460,7 +467,8 @@ def stage_pull(ctx: Context) -> None:
     pl.DataFrame(
         login_rows, schema={"repo": pl.String, "email": pl.String, "login": pl.String}
     ).write_parquet(ctx.interim("commit_logins"))
-    del commits, latest  # not needed below; frees memory for the GH Archive pull
+    del latest
+    shutil.rmtree(parts, ignore_errors=True)
 
     # OSV advisories.
     osv = OSVClient(ctx.http, ctx.cache)
