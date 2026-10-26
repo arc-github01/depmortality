@@ -17,7 +17,7 @@ from depmortality.data.github import (
     parse_repo_response,
     repo_query,
 )
-from depmortality.data.gitlog import parse_log
+from depmortality.data.gitlog import parse_log, parse_log_frame
 from depmortality.data.osv import parse_vuln
 from depmortality.data.pypi import parse_project_json, parse_project_status, parse_roles
 from depmortality.labels.triggers import WheelTag, parse_wheel_filename
@@ -71,6 +71,8 @@ def test_git_log_parse() -> None:
     assert all(len(c.sha) == 40 for c in commits)
     assert commits[0].committer_day >= commits[-1].committer_day
     assert commits[0].author_email == "author0@example.org"
+    frame = parse_log_frame((FIX / "git_six_head.log").read_text(encoding="utf-8"))
+    assert frame.to_dicts() == [{k: getattr(c, k) for k in frame.columns} for c in commits]
 
 
 def test_github_repo_query_and_parse() -> None:

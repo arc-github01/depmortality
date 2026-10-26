@@ -242,3 +242,11 @@ as an alias only if GitHub resolves it to the same repository id (GitHub redirec
 repos). If the old name now belongs to a different, newer repository, the alias holds only
 for events before that repository's creation date. Renames never written into PyPI metadata
 are still missed: a known, unquantified undercount of early replies.
+
+## 2026-10-26 — Commit histories held columnar (memory)
+
+The pull stage was stopped twice by the host for low memory. Cause: 3.86 M commits across
+1,930 repos were held as Python objects and copied once per package sharing a repo
+(e.g. aws/aws-cdk × 13). Commits are now parsed straight into one polars frame per repo
+(~2 MB for aws-cdk's 18k commits) and joined to packages once. Parallel clones cut from 4 to 2.
+The columnar parser is checked against the object parser (identical dates on aws/aws-cdk).

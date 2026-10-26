@@ -28,7 +28,7 @@ from depmortality.config import Settings, load_settings
 from depmortality.data import depsdev, gharchive
 from depmortality.data.gha_mirror import MirrorClient
 from depmortality.data.github import GitHubClient
-from depmortality.data.gitlog import CloneFailed, commits_for
+from depmortality.data.gitlog import COMMIT_SCHEMA, CloneFailed, commits_frame
 from depmortality.data.osv import OSVClient
 from depmortality.data.pypi import PyPIClient
 from depmortality.labels.identity import MissingSalt
@@ -40,7 +40,7 @@ from depmortality.utils.paths import REPO_ROOT, DataPaths, default_paths, report
 
 log = logging.getLogger("depmortality.pipeline")
 PHASE = "phase0"
-GIT_WORKERS = 4
+GIT_WORKERS = 2  # 4 ran the machine low on memory (2026-10-26)
 
 
 @dataclass
@@ -394,41 +394,40 @@ def stage_pull(ctx: Context) -> None:
     repos = sorted(set(pkg_repo.values()))
     ctx.paths.git_mirrors.mkdir(parents=True, exist_ok=True)
 
-    def one(repo: str) -> tuple[str, Any]:
+    def one(repo: str) -> tuple[str, pl.DataFrame | CloneFailed]:
         try:
-            return repo, commits_for(repo, ctx.cache, ctx.paths.git_mirrors)
+            return repo, commits_frame(repo, ctx.cache, ctx.paths.git_mirrors)
         except CloneFailed as exc:
             return repo, exc
 
+    # Columnar per repo, joined to packages once: millions of commits, several packages
+    # per repo (DECISIONS.md: holding them as Python objects ran the machine out of memory).
+    repo_frames: list[pl.DataFrame] = []
+    failed: dict[str, CloneFailed] = {}
     with ThreadPoolExecutor(GIT_WORKERS) as pool:
-        by_repo = dict(pool.map(one, repos))
-    commit_rows = []
+        for repo, result in pool.map(one, repos):
+            if isinstance(result, CloneFailed):
+                failed[repo] = result
+            else:
+                repo_frames.append(result.with_columns(pl.lit(repo).alias("repo")))
     for name in names:
-        result = by_repo[pkg_repo[name]]
-        if isinstance(result, Exception):
-            ctx.status(name, "git", False, f"CloneFailed: {result}"[:300])
-            continue
-        ctx.status(name, "git", True)
-        for c in result:
-            commit_rows.append({"package": name, "repo": pkg_repo[name], **asdict(c)})
-    commits = (
-        pl.DataFrame(commit_rows, infer_schema_length=None)
-        if commit_rows
-        else pl.DataFrame(
-            schema={
-                "package": pl.String,
-                "repo": pl.String,
-                "sha": pl.String,
-                "n_parents": pl.Int64,
-                "author_name": pl.String,
-                "author_email": pl.String,
-                "author_day": pl.Date,
-                "committer_name": pl.String,
-                "committer_email": pl.String,
-                "committer_day": pl.Date,
-            }
-        )
+        exc = failed.get(pkg_repo[name])
+        if exc is not None:
+            ctx.status(name, "git", False, f"CloneFailed: {exc}"[:300])
+        else:
+            ctx.status(name, "git", True)
+    repo_commits = (
+        pl.concat(repo_frames)
+        if repo_frames
+        else pl.DataFrame(schema={**COMMIT_SCHEMA, "repo": pl.String})
     )
+    del repo_frames
+    commits = (
+        pilot.select(pl.col("name").alias("package"), "repo")
+        .join(repo_commits, on="repo", how="inner")
+        .select("package", "repo", *COMMIT_SCHEMA)
+    )
+    del repo_commits
     commits.write_parquet(ctx.interim("commits"))
 
     # GitHub: repo metadata (from resolve) and email -> login for one commit per email.
@@ -439,18 +438,18 @@ def stage_pull(ctx: Context) -> None:
     gh = GitHubClient(ctx.http, ctx.cache)
     login_rows = []
     latest = commits.sort("committer_day").group_by("repo", "author_email").last()
-    for repo, group in latest.group_by("repo"):
+    for key, group in latest.group_by("repo"):
         shas = group["sha"].to_list()
         pairs = (
             _try(
                 ctx,
-                str(repo[0]),
+                str(key[0]),
                 "github_commit_logins",
-                partial(gh.commit_logins, str(repo[0]), shas),
+                partial(gh.commit_logins, str(key[0]), shas),
             )
             or []
         )
-        login_rows += [{"repo": repo[0], "email": e, "login": lg} for e, lg in pairs]
+        login_rows += [{"repo": key[0], "email": e, "login": lg} for e, lg in pairs]
     pl.DataFrame(
         login_rows, schema={"repo": pl.String, "email": pl.String, "login": pl.String}
     ).write_parquet(ctx.interim("commit_logins"))

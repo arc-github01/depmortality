@@ -14,12 +14,24 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+import polars as pl
+
 from depmortality.utils.cache import DiskCache
 
 FIELD = "\x1f"
 RECORD = "\x1e"
 LOG_FORMAT = FIELD.join(["%H", "%P", "%an", "%ae", "%aI", "%cn", "%ce", "%cI"]) + RECORD
 FAILED_MARKER = "__CLONE_FAILED__:"
+COMMIT_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
+    "sha": pl.String,
+    "n_parents": pl.Int64,
+    "author_name": pl.String,
+    "author_email": pl.String,
+    "author_day": pl.Date,
+    "committer_name": pl.String,
+    "committer_email": pl.String,
+    "committer_day": pl.Date,
+}
 GIT_ENV = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo", "GCM_INTERACTIVE": "never"}
 
 
@@ -65,6 +77,38 @@ def parse_log(text: str) -> list[Commit]:
     return commits
 
 
+def parse_log_frame(text: str) -> pl.DataFrame:
+    """Columnar ``parse_log``: millions of commits fit in memory this way."""
+    records = [r.strip("\n") for r in text.split(RECORD)]
+    rows = [r.split(FIELD) for r in records if r]
+    if not rows:
+        return pl.DataFrame(schema=COMMIT_SCHEMA)
+    cols = list(zip(*rows, strict=True))
+
+    def day(values: tuple[str, ...]) -> pl.Series:
+        # git writes UTC offsets as either "+00:00" or "Z".
+        return (
+            pl.Series(values)
+            .str.replace(r"Z$", "+00:00")
+            .str.to_datetime("%Y-%m-%dT%H:%M:%S%:z", time_zone="UTC")
+            .dt.date()
+        )
+
+    return pl.DataFrame(
+        {
+            "sha": cols[0],
+            "n_parents": [len(p.split()) for p in cols[1]],
+            "author_name": cols[2],
+            "author_email": cols[3],
+            "author_day": day(cols[4]),
+            "committer_name": cols[5],
+            "committer_email": cols[6],
+            "committer_day": day(cols[7]),
+        },
+        schema=COMMIT_SCHEMA,
+    )
+
+
 def _git(*args: str, cwd: Path | None = None, timeout: float = 1800) -> str:
     env = {**os.environ, **GIT_ENV}
     proc = subprocess.run(
@@ -108,7 +152,7 @@ def clone_log(repo: str, mirrors: Path, *, keep_mirror: bool = False) -> str:
             shutil.rmtree(dest, ignore_errors=True)
 
 
-def commits_for(repo: str, cache: DiskCache, mirrors: Path) -> list[Commit]:
+def _log_text(repo: str, cache: DiskCache, mirrors: Path) -> str:
     """Cached: the raw log text is stored under source 'git'."""
 
     def fetch() -> bytes:
@@ -121,4 +165,12 @@ def commits_for(repo: str, cache: DiskCache, mirrors: Path) -> list[Commit]:
     text = cache.get_bytes("git", {"repo": repo}, fetch, suffix="log").decode("utf-8")
     if text.startswith(FAILED_MARKER):
         raise CloneFailed(text.removeprefix(FAILED_MARKER))
-    return parse_log(text)
+    return text
+
+
+def commits_for(repo: str, cache: DiskCache, mirrors: Path) -> list[Commit]:
+    return parse_log(_log_text(repo, cache, mirrors))
+
+
+def commits_frame(repo: str, cache: DiskCache, mirrors: Path) -> pl.DataFrame:
+    return parse_log_frame(_log_text(repo, cache, mirrors))
