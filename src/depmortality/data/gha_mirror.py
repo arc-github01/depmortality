@@ -19,7 +19,7 @@ import datetime as dt
 import io
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 import polars as pl
 
@@ -35,6 +35,7 @@ BATCH = 50
 # (measured on the mirror 2026-10-26: 0% before 2017-08, ~50% from 2017-09, 0% after 2025-10).
 ASSOCIATION_WINDOW = (dt.date(2017, 9, 1), dt.date(2025, 9, 30))
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+KEPT_ACTIONS = "'none', 'created', 'submitted', 'opened', 'published'"
 _LIMIT_HINTS = ("TOO_MANY_ROWS", "TOO_SLOW", "TIMEOUT_EXCEEDED", "Limit for result exceeded")
 
 SLIM_SCHEMA: dict[str, pl.DataType | type[pl.DataType]] = {
@@ -70,6 +71,8 @@ def query_sql(names: Sequence[str], start: dt.date, end: dt.date) -> str:
         "toString(action) AS action, number, comment_id, "
         "toString(author_association) AS author_association, ref "
         f"FROM github_events WHERE event_type IN ({types}) AND repo_name IN ({repos}) "
+        # Only the actions gharchive.to_events keeps ('none' is the mirror's null).
+        f"AND toString(action) IN ({KEPT_ACTIONS}) "
         f"AND created_at >= '{start.isoformat()} 00:00:00' "
         f"AND created_at < '{(end + dt.timedelta(days=1)).isoformat()} 00:00:00' "
         "FORMAT Parquet"
@@ -86,17 +89,22 @@ def to_slim(raw: pl.DataFrame) -> pl.DataFrame:
         .then(pl.col("author_association"))
         .otherwise(pl.lit(None, dtype=pl.String))
     )
-    event_id = pl.concat_str(
-        [
-            pl.col("type"),
-            pl.col("repo_name"),
-            pl.col("created_at").cast(pl.String),
-            pl.col("actor_login"),
-            pl.col("number").cast(pl.String),
-            pl.col("comment_id").cast(pl.String),
-            pl.col("action"),
-        ],
-        separator="|",
+    # Hashed to keep memory small; only used to drop duplicate rows.
+    event_id = (
+        pl.concat_str(
+            [
+                pl.col("type"),
+                pl.col("repo_name"),
+                pl.col("created_at").cast(pl.String),
+                pl.col("actor_login"),
+                pl.col("number").cast(pl.String),
+                pl.col("comment_id").cast(pl.String),
+                pl.col("action"),
+            ],
+            separator="|",
+        )
+        .hash(seed=0)
+        .cast(pl.String)
     )
     return raw.select(
         event_id.alias("event_id"),
@@ -155,16 +163,18 @@ class MirrorClient:
                 names, mid_day + dt.timedelta(days=1), end
             )
 
-    def events(self, names: Sequence[str], start: dt.date, end: dt.date) -> pl.DataFrame:
+    def iter_events(
+        self, names: Sequence[str], start: dt.date, end: dt.date
+    ) -> Iterator[pl.DataFrame]:
+        """Slim rows, one frame per mirror query, so the pull never sits in memory at once."""
         ordered = sorted(set(names))
-        frames: list[pl.DataFrame] = []
         for i in range(0, len(ordered), BATCH):
-            frames += self._pull(ordered[i : i + BATCH], start, end)
+            for frame in self._pull(ordered[i : i + BATCH], start, end):
+                if frame.height:
+                    yield to_slim(frame)
             if (i // BATCH) % 10 == 0:
                 log.info("mirror: %d/%d repo names", min(i + BATCH, len(ordered)), len(ordered))
-        raw = (
-            pl.concat([f for f in frames if f.height], how="vertical_relaxed")
-            if frames
-            else pl.DataFrame()
-        )
-        return to_slim(raw)
+
+    def events(self, names: Sequence[str], start: dt.date, end: dt.date) -> pl.DataFrame:
+        kept = list(self.iter_events(names, start, end))
+        return pl.concat(kept, how="vertical_relaxed") if kept else pl.DataFrame(schema=SLIM_SCHEMA)

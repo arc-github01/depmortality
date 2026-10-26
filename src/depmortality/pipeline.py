@@ -12,6 +12,7 @@ import datetime as dt
 import json
 import logging
 import os
+import shutil
 import sys
 from collections import Counter
 from collections.abc import Callable
@@ -453,6 +454,7 @@ def stage_pull(ctx: Context) -> None:
     pl.DataFrame(
         login_rows, schema={"repo": pl.String, "email": pl.String, "login": pl.String}
     ).write_parquet(ctx.interim("commit_logins"))
+    del commits, latest  # not needed below; frees memory for the GH Archive pull
 
     # OSV advisories.
     osv = OSVClient(ctx.http, ctx.cache)
@@ -487,31 +489,19 @@ def stage_pull(ctx: Context) -> None:
     found = universe_repos.join(pilot.select("repo").unique(), on="repo", how="semi").filter(
         pl.col("found")
     )
+    repo_to_packages: dict[str, list[str]] = {}
+    for name, repo in pkg_repo.items():
+        repo_to_packages.setdefault(repo, []).append(name)
+    # Renamed repos: GH Archive carries the name at event time; map current and earlier
+    # names back to the deps.dev slug.
+    for r, nwo in found.select("repo", "name_with_owner").drop_nulls().iter_rows():
+        if nwo.lower() != r:
+            repo_to_packages.setdefault(nwo.lower(), repo_to_packages.get(r, []))
+    for r, alias in aliases.select("repo", "alias").iter_rows():
+        if alias.lower() != r and r in repo_to_packages:
+            repo_to_packages.setdefault(alias.lower(), repo_to_packages[r])
     if ctx.settings.pilot.gha_source == "clickhouse_mirror":
-        # The mirror matches repo names case-sensitively: use the canonical GitHub name and
-        # deps.dev's original-case slug.
-        case_names = pilot.join(found.select("repo"), on="repo", how="semi")["repo_case"]
-        mirror_names = sorted(
-            set(found["name_with_owner"].drop_nulls().to_list())
-            | set(case_names.to_list())
-            | set(aliases["alias"].to_list())
-        )
-        mirror = MirrorClient(ctx.http, ctx.cache)
-        raw = mirror.events(
-            mirror_names, ctx.settings.pilot.gha_start, ctx.settings.splits.data_freeze
-        )
-        # A reused old name belongs to our repo only before the new repo was created.
-        cutoffs = aliases.filter(pl.col("until").is_not_null()).select(
-            pl.col("alias").str.to_lowercase().alias("repo_name"), "until"
-        )
-        raw = (
-            raw.join(cutoffs, on="repo_name", how="left")
-            .filter(
-                pl.col("until").is_null() | (pl.col("created_at").cast(pl.Date) < pl.col("until"))
-            )
-            .drop("until")
-        )
-        id_to_repo: dict[int, str] = {}
+        _mirror_events(ctx, pilot, found, aliases, repo_to_packages)
     else:
         project, dataset = (
             _dataset()
@@ -535,18 +525,9 @@ def stage_pull(ctx: Context) -> None:
         id_to_repo = {
             int(i): r for r, i in found.select("repo", "database_id").drop_nulls().iter_rows()
         }
-    repo_to_packages: dict[str, list[str]] = {}
-    for name, repo in pkg_repo.items():
-        repo_to_packages.setdefault(repo, []).append(name)
-    # Renamed repos: GH Archive carries the name at event time; map current and earlier
-    # names back to the deps.dev slug.
-    for r, nwo in found.select("repo", "name_with_owner").drop_nulls().iter_rows():
-        if nwo.lower() != r:
-            repo_to_packages.setdefault(nwo.lower(), repo_to_packages.get(r, []))
-    for r, alias in aliases.select("repo", "alias").iter_rows():
-        if alias.lower() != r and r in repo_to_packages:
-            repo_to_packages.setdefault(alias.lower(), repo_to_packages[r])
-    gharchive.to_events(raw, repo_to_packages, id_to_repo).write_parquet(ctx.interim("gha_events"))
+        gharchive.to_events(raw, repo_to_packages, id_to_repo).write_parquet(
+            ctx.interim("gha_events")
+        )
 
     pl.DataFrame(
         ctx.status_rows,
@@ -554,6 +535,45 @@ def stage_pull(ctx: Context) -> None:
     ).write_parquet(ctx.interim("pull_status"))
     counts = Counter((r["step"], r["ok"]) for r in ctx.status_rows)
     log.info("pull status: %s", dict(counts))
+
+
+def _mirror_events(
+    ctx: Context,
+    pilot: pl.DataFrame,
+    found: pl.DataFrame,
+    aliases: pl.DataFrame,
+    repo_to_packages: dict[str, list[str]],
+) -> None:
+    """GH Archive events from the ClickHouse mirror, written to disk one query at a time
+    (the whole pull does not fit in memory on the pilot machine)."""
+    # The mirror matches repo names case-sensitively: use the canonical GitHub name, the
+    # deps.dev original-case slug and the recovered earlier names.
+    case_names = pilot.join(found.select("repo"), on="repo", how="semi")["repo_case"]
+    mirror_names = sorted(
+        set(found["name_with_owner"].drop_nulls().to_list())
+        | set(case_names.to_list())
+        | set(aliases["alias"].to_list())
+    )
+    # A reused old name belongs to our repo only before the new repo was created.
+    cutoffs = aliases.filter(pl.col("until").is_not_null()).select(
+        pl.col("alias").str.to_lowercase().alias("repo_name"), "until"
+    )
+    parts = ctx.paths.interim / "gha_events_parts"
+    shutil.rmtree(parts, ignore_errors=True)
+    parts.mkdir(parents=True)
+    mirror = MirrorClient(ctx.http, ctx.cache)
+    start, end = ctx.settings.pilot.gha_start, ctx.settings.splits.data_freeze
+    for i, slim in enumerate(mirror.iter_events(mirror_names, start, end)):
+        kept = (
+            slim.join(cutoffs, on="repo_name", how="left")
+            .filter(
+                pl.col("until").is_null() | (pl.col("created_at").cast(pl.Date) < pl.col("until"))
+            )
+            .drop("until")
+        )
+        gharchive.to_events(kept, repo_to_packages, {}).write_parquet(parts / f"{i:05d}.parquet")
+    pl.scan_parquet(parts / "*.parquet").sink_parquet(ctx.interim("gha_events"))
+    shutil.rmtree(parts, ignore_errors=True)
 
 
 def _repo_aliases(ctx: Context, classifiers: pl.DataFrame, pilot: pl.DataFrame) -> pl.DataFrame:

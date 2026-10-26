@@ -250,3 +250,12 @@ The pull stage was stopped twice by the host for low memory. Cause: 3.86 M commi
 (e.g. aws/aws-cdk × 13). Commits are now parsed straight into one polars frame per repo
 (~2 MB for aws-cdk's 18k commits) and joined to packages once. Parallel clones cut from 4 to 2.
 The columnar parser is checked against the object parser (identical dates on aws/aws-cdk).
+
+## 2026-10-26 — GH Archive mirror rows streamed to disk (memory)
+
+The third pull run was stopped for low memory near the end of the mirror pull (pytorch alone
+is ~2 M kept events). The mirror queries now keep only the actions that `to_events` uses
+(`opened`, `created`, `submitted`, `published`, and none for pushes). This is checked on
+benjaminp/six: identical event counts by kind before and after. Event ids are hashed, and
+each query's rows are mapped to events and written to disk as they arrive, instead of being
+held in memory together. Commit rows are freed before the mirror pull.
